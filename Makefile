@@ -7,7 +7,7 @@ all: htslib vcf2msa
 
 .PHONY: htslib
 
-vcf2msa: vcf2msa.cpp
+vcf2msa: vcf2msa.c
 	$(CC) $(CFLAGS) -o $@ $^ $(INC) $(LIB)
 
 htslib: 
