@@ -22,7 +22,7 @@ The concatenation of these fasta files is the multiple sequence alignment.
 
 ## TODO: 
 
-- check name of input sequence against the sequence name associated with each VCF record
+- ~~check name of input sequence against the sequence name associated with each VCF record~~
 - output the reference sequence as part of the MSA
 - check that the input VCF is sorted
 - output one fasta file instead of multiple fasta files?

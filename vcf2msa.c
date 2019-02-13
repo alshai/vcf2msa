@@ -11,9 +11,10 @@ typedef khash_t(seqdict) seqdict_t;
  * assuming that vcf file is SORTED (do bcftools sort)
  */
 
-int vcf2msa(kseq_t* seq, htsFile* vcfp, bcf_hdr_t* hdr, int nfps, FILE** fps);
+void vcf2msa(kseq_t* seq, htsFile* vcfp, bcf_hdr_t* hdr, FILE** fps);
 void open_vcf(const char* fname, htsFile** vcfp, bcf_hdr_t** hdr);
 void align_alleles(bcf1_t* rec, char* ref, char* alt);
+void open_smpl_fps(bcf_hdr_t* hdr, int* nsmpls, FILE*** fps);
 
 void open_vcf(const char* fname, htsFile** vcfp, bcf_hdr_t** hdr) {
     *vcfp = hts_open(fname, "r");
@@ -22,6 +23,23 @@ void open_vcf(const char* fname, htsFile** vcfp, bcf_hdr_t** hdr) {
         fprintf(stderr, "failure to read vcf!\n");
         exit(1);
     }
+}
+
+void open_smpl_fps(bcf_hdr_t* hdr, int* nsmpl, FILE*** fps) {
+    int n = bcf_hdr_nsamples(hdr);
+    *fps = (FILE**) malloc(sizeof(FILE*) * n * 2);
+    // TODO: maybe we want the filenames to be dynamically allocated?
+    char fname1[512];
+    char fname2[512];
+    for (int i = 0; i < n; ++i) {
+        strcpy(fname1, hdr->samples[i]);
+        strcpy(fname2, hdr->samples[i]);
+        strcat(fname1, "_1.fa");
+        strcat(fname2, "_2.fa");
+        (*fps)[i*2] = fopen(fname1, "w");
+        (*fps)[(i*2)+1] = fopen(fname2, "w");
+    }
+    *nsmpl = n;
 }
 
 void align_alleles(bcf1_t* rec, char* ref, char* alt) {
@@ -40,14 +58,24 @@ void align_alleles(bcf1_t* rec, char* ref, char* alt) {
     }
 }
 
-
-int vcf2msa(kseq_t* seq, htsFile* vcfp, bcf_hdr_t* hdr, int nfps, FILE** fps) {
+/* INPUT
+ * seq : reference sequence
+ * vcfp : pointer to VCF file
+ * hdr : pointer to header of VCF
+ * fps: pointers to output files - must be size of at least 2*nsmpls
+ *      where nsmpls is number of samples in the vcf file
+ *
+ * OUTPUT/EFFECTS:
+ * sequences will be written to each file in fps
+ */
+void vcf2msa(kseq_t* seq, htsFile* vcfp, bcf_hdr_t* hdr, FILE** fps) {
     bcf1_t* rec = bcf_init();
-    int npos = 0, ppos = 0;
+    size_t npos = 0, ppos = 0;
     int nsmpl = bcf_hdr_nsamples(hdr);
     int32_t* gts = NULL;
     int ngt;
     int ngt_arr = 0;
+    /* TODO: dynamically allocate ref/alt to support larger indels */
     char ref[512];
     char alt[512];
     for (int s = 0; s < nsmpl; ++s) {
@@ -55,14 +83,15 @@ int vcf2msa(kseq_t* seq, htsFile* vcfp, bcf_hdr_t* hdr, int nfps, FILE** fps) {
         fprintf(fps[(s*2)+1], ">%s_2.%s\n", hdr->samples[s], seq->name.s);
     }
     int nvars = 0, nskipvars = 0;
-    while (ppos < seq->seq.l && !bcf_read(vcfp, hdr, rec)) {
-        bcf_unpack(rec, BCF_UN_ALL);
-        if (rec->n_allele > 2) continue;
+    int seqid = bcf_hdr_name2id(hdr, seq->name.s);
+    while (ppos < seq->seq.l && !bcf_read(vcfp, hdr, rec) && !bcf_unpack(rec, BCF_UN_ALL)) {
+        if (seqid != rec->rid || rec->n_allele > 2) {
+            continue;
+        }
         npos = rec->pos;
         ++nvars;
         if (npos < ppos) { // overlapping variant
             ++nskipvars;
-            // fprintf(stderr, "skipping overlapping variant at %d->%d: ", ppos, npos);
             continue;
         }
         align_alleles(rec, ref, alt);
@@ -80,13 +109,12 @@ int vcf2msa(kseq_t* seq, htsFile* vcfp, bcf_hdr_t* hdr, int nfps, FILE** fps) {
         ppos = npos + strlen(rec->d.allele[0]);
     }
     for (int s = 0; s < nsmpl*2; ++s) {
-        // fwrite(seq->seq.s + ppos, sizeof(char), seq->seq.l-ppos, fps[s]);
+        fwrite(seq->seq.s + ppos, sizeof(char), seq->seq.l-ppos, fps[s]);
         fwrite("\n", sizeof(char), 1, fps[s]);
     }
     fprintf(stderr, "nvars: %d, skipped %d (%.3f%%)\n", nvars, nskipvars, (double) nskipvars / (double) nvars);
     free(gts);
     bcf_destroy(rec);
-    return 0;
 }
 
 int main(int argc, char** argv) {
@@ -106,25 +134,16 @@ int main(int argc, char** argv) {
     htsFile* vcfp;
     bcf_hdr_t* hdr;
     open_vcf(vcf_fname, &vcfp, &hdr);
-    int nsmpl = bcf_hdr_nsamples(hdr);
-    FILE** outfps = (FILE**) malloc(sizeof(FILE*) * nsmpl * 2);
-    for (int i = 0; i < nsmpl; ++i) {
-        char* fname1 = strdup(hdr->samples[i]);
-        fname1 = strcat(fname1, "_1.fa");
-        char* fname2 = strdup(hdr->samples[i]);
-        fname2 = strcat(fname2, "_2.fa");
-        outfps[i*2] = fopen(fname1, "w");
-        outfps[(i*2)+1] = fopen(fname2, "w");
-        free(fname1);
-        free(fname2);
-    }
+    FILE** outfps;
+    int nsmpl;
+    open_smpl_fps(hdr, &nsmpl, &outfps);
     bcf_hdr_destroy(hdr);
     hts_close(vcfp);
 
     // TODO: don't reopen the vcf every time?
     while (kseq_read(seq) >= 0) {
         open_vcf(vcf_fname, &vcfp, &hdr);
-        vcf2msa(seq, vcfp, hdr, nsmpl*2, outfps);
+        vcf2msa(seq, vcfp, hdr, outfps);
         bcf_hdr_destroy(hdr);
         hts_close(vcfp);
     }
