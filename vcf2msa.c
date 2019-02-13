@@ -1,7 +1,5 @@
-#include <cstdio>
+#include <stdio.h>
 #include <zlib.h>
-#include <vector>
-#include <sys/stat.h>
 #include "htslib/vcf.h"
 #include "htslib/kseq.h"
 #include "htslib/khash.h"
@@ -36,7 +34,8 @@ void align_alleles(bcf1_t* rec, char* ref, char* alt) {
         longer = alt;
         shorter = ref;
     }
-    for (size_t i = 0; i < strlen(longer) - strlen(shorter); ++i) {
+    size_t diff = strlen(longer) - strlen(shorter);
+    for (size_t i = 0; i < diff; ++i) {
         strcat(shorter, "-");
     }
 }
@@ -59,15 +58,14 @@ int vcf2msa(kseq_t* seq, htsFile* vcfp, bcf_hdr_t* hdr, int nfps, FILE** fps) {
     while (ppos < seq->seq.l && !bcf_read(vcfp, hdr, rec)) {
         bcf_unpack(rec, BCF_UN_ALL);
         if (rec->n_allele > 2) continue;
-        align_alleles(rec, ref, alt);
         npos = rec->pos;
         ++nvars;
         if (npos < ppos) { // overlapping variant
             ++nskipvars;
             // fprintf(stderr, "skipping overlapping variant at %d->%d: ", ppos, npos);
-            // fprintf(stderr, "pvar = %s, nvar = %s\n", prec->d.allele[0], rec->d.allele[0]); // TODO: remove this
             continue;
         }
+        align_alleles(rec, ref, alt);
         ngt = bcf_get_genotypes(hdr, rec, &gts, &ngt_arr);
         if (ngt != nsmpl * 2) {
             fprintf(stderr, "error - genotype missing for a sample! expected %d, got %d\n", nsmpl*2, ngt);
@@ -82,10 +80,12 @@ int vcf2msa(kseq_t* seq, htsFile* vcfp, bcf_hdr_t* hdr, int nfps, FILE** fps) {
         ppos = npos + strlen(rec->d.allele[0]);
     }
     for (int s = 0; s < nsmpl*2; ++s) {
-        fwrite(seq->seq.s + ppos, sizeof(char), seq->seq.l-ppos, fps[s]);
+        // fwrite(seq->seq.s + ppos, sizeof(char), seq->seq.l-ppos, fps[s]);
         fwrite("\n", sizeof(char), 1, fps[s]);
     }
     fprintf(stderr, "nvars: %d, skipped %d (%.3f%%)\n", nvars, nskipvars, (double) nskipvars / (double) nvars);
+    free(gts);
+    bcf_destroy(rec);
     return 0;
 }
 
@@ -107,7 +107,6 @@ int main(int argc, char** argv) {
     bcf_hdr_t* hdr;
     open_vcf(vcf_fname, &vcfp, &hdr);
     int nsmpl = bcf_hdr_nsamples(hdr);
-    // std::vector<FILE*> outfps(nsmpl*2);
     FILE** outfps = (FILE**) malloc(sizeof(FILE*) * nsmpl * 2);
     for (int i = 0; i < nsmpl; ++i) {
         char* fname1 = strdup(hdr->samples[i]);
@@ -119,18 +118,21 @@ int main(int argc, char** argv) {
         free(fname1);
         free(fname2);
     }
+    bcf_hdr_destroy(hdr);
     hts_close(vcfp);
 
-    // go through each sequence and append haplotype to the files
-    // TODO: don't reopen the vcf every time
+    // TODO: don't reopen the vcf every time?
     while (kseq_read(seq) >= 0) {
         open_vcf(vcf_fname, &vcfp, &hdr);
         vcf2msa(seq, vcfp, hdr, nsmpl*2, outfps);
+        bcf_hdr_destroy(hdr);
+        hts_close(vcfp);
     }
     kseq_destroy(seq);
     for (int i = 0; i < nsmpl*2; ++i) {
         fclose(outfps[i]);
     }
     free(outfps);
+    gzclose(fafp);
     return 0;
 }
