@@ -25,6 +25,11 @@ void open_vcf(const char* fname, htsFile** vcfp, bcf_hdr_t** hdr) {
     }
 }
 
+void close_vcf(htsFile* vcfp, bcf_hdr_t* hdr) {
+    bcf_hdr_destroy(hdr);
+    hts_close(vcfp);
+}
+
 void open_smpl_fps(bcf_hdr_t* hdr, int* nsmpl, FILE*** fps) {
     int n = bcf_hdr_nsamples(hdr);
     *fps = (FILE**) malloc(sizeof(FILE*) * n * 2);
@@ -72,9 +77,11 @@ void vcf2msa(kseq_t* seq, htsFile* vcfp, bcf_hdr_t* hdr, FILE** fps) {
     bcf1_t* rec = bcf_init();
     size_t npos = 0, ppos = 0;
     int nsmpl = bcf_hdr_nsamples(hdr);
-    int32_t* gts = NULL;
     int ngt;
     int ngt_arr = 0;
+    int nvars = 0, nskipvars = 0;
+    int seqid = bcf_hdr_name2id(hdr, seq->name.s);
+    int32_t* gts = NULL;
     /* TODO: dynamically allocate ref/alt to support larger indels */
     char ref[512];
     char alt[512];
@@ -82,8 +89,6 @@ void vcf2msa(kseq_t* seq, htsFile* vcfp, bcf_hdr_t* hdr, FILE** fps) {
         fprintf(fps[s*2],     ">%s_1.%s\n", hdr->samples[s], seq->name.s);
         fprintf(fps[(s*2)+1], ">%s_2.%s\n", hdr->samples[s], seq->name.s);
     }
-    int nvars = 0, nskipvars = 0;
-    int seqid = bcf_hdr_name2id(hdr, seq->name.s);
     while (ppos < seq->seq.l && !bcf_read(vcfp, hdr, rec) && !bcf_unpack(rec, BCF_UN_ALL)) {
         if (seqid != rec->rid || rec->n_allele > 2) {
             continue;
@@ -137,15 +142,13 @@ int main(int argc, char** argv) {
     FILE** outfps;
     int nsmpl;
     open_smpl_fps(hdr, &nsmpl, &outfps);
-    bcf_hdr_destroy(hdr);
-    hts_close(vcfp);
+    close_vcf(vcfp, hdr);
 
     // TODO: don't reopen the vcf every time?
     while (kseq_read(seq) >= 0) {
         open_vcf(vcf_fname, &vcfp, &hdr);
         vcf2msa(seq, vcfp, hdr, outfps);
-        bcf_hdr_destroy(hdr);
-        hts_close(vcfp);
+        close_vcf(vcfp, hdr);
     }
     kseq_destroy(seq);
     for (int i = 0; i < nsmpl*2; ++i) {

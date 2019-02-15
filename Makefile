@@ -1,14 +1,14 @@
 CC=gcc
-CFLAGS=-Wall -Wextra
+CFLAGS=-g -Wall -Wextra
 INC=-I./include
-LIB=-L./lib -l:libhts.a -llzma -lz -lpthread -lbz2
+LIB=-L./lib -lhts -lz 
 
-all: htslib vcf2msa 
+all: vcf2msa htslib
 
-.PHONY: htslib
+.PHONY: all
 
-vcf2msa: vcf2msa.c
-	$(CC) $(CFLAGS) -o $@ $^ $(INC) $(LIB)
+vcf2msa: vcf2msa.c htslib
+	$(CC) $(CFLAGS) -o $@ $< $(INC) $(LIB)
 
 htslib: 
 	cd htslib && $(MAKE) &&  $(MAKE) prefix=.. install
